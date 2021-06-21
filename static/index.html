@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Page Of Inputs</title>
+  <style>
+    * {
+      padding: 0;
+      margin: 0;
+      box-sizing: border-box;
+      outline: none;
+      font-family: monospace;
+    }
+    html, body, #app {
+      width: 100%;
+      height: 100%;
+    }
+    #app {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: black;
+      color: whitesmoke;
+    }
+    .input {
+      width: 8px;
+      height: 16px;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+    }
+
+    .input:hover {
+      background-color: #29291f;
+    }
+    .row {
+      display: flex;
+      width: 100vw;
+      height: 16px;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      width: 100vw;
+      height: 100vh;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" @keydown="onInput" tabindex="0">
+    <div class="container">
+      <span v-for="y in rows" class="row">
+        <div :ref="`i_${x}_${y}`" v-for="x in cols" type="text" class="input" :xy="`${x}_${y}`" @click="charClick(x, y, $event)" @contextmenu="charClick(x, y, $event)" tabindex="0"> </div>
+      </span>
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chillout/5.0.0/chillout.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js"></script>
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script>
+    const app = new Vue({
+      data() {
+        return {
+          rows: Math.floor(innerHeight / 16)-1,
+          cols: Math.floor(innerWidth / 8)-1,
+          x: 1,
+          y: 1,
+          lastLineX: 1,
+          charBuffer: new Map(),
+          cursorColor: "#474722",
+          currentColor: 0xffffff,
+          socket: io(window.location.href),
+          stopWrite: false
+        }
+      },
+      mounted() {
+        this.updateCursorVis(this.cursorColor);
+        this.socket.on("char", ([x, y], [char, color])=>{
+          this.setCharXY(x, y, char, color, false);
+          console.log(["char", x, y, char, color])
+        })
+
+        this.socket.emit("getCharBuffer", (buffer) => {
+          this.charBuffer = new Map(buffer);
+          this.drawBuffer();
+        })
+      },
+      methods: {
+        charClick(x, y, e) {
+          this.setCursorPos(x, y);
+          this.stopWrite = true;
+          if (e.type == "contextmenu") {
+            e.preventDefault();
+            navigator.clipboard.readText().then((d)=>{
+              this.write(d)
+            })
+          }
+        },
+        setCharXY(x, y, char, color=this.currentColor, sendToServer=false) {
+          if (this.$refs?.[`i_${x}_${y}`]?.[0]) {
+            this.$refs[`i_${x}_${y}`][0].textContent = char;
+            this.$refs[`i_${x}_${y}`][0].style.color = "#"+Number(color).toString(16);
+            this.charBuffer.set(`${x}_${y}`, [char, color]);
+          }
+          if (sendToServer) this.socket.emit("char", [x, y], [char, color]);
+        },
+        async write(text) {
+          let lines = text.split("\n").map(i=>i.trim());
+          this.stopWrite = false;
+          await chillout.forEach(lines, async (line)=>{
+            if (this.stopWrite) return chillout.StopIteration;
+            let chars = [...line];
+            await chillout.forEach(chars, async (char)=>{
+              if (this.stopWrite) return chillout.StopIteration;
+              this.updateCursorVis("transparent")
+              this.x = Math.min(this.x + 1, this.cols + 1);
+              this.updateCursorVis(this.cursorColor)
+              this.setCharXY(this.x, this.y, char, this.currentColor, true);
+            })
+            this.updateCursorVis("transparent")
+            this.y = Math.min(this.y + 1, this.rows);
+            this.x = this.lastLineX;
+            this.updateCursorVis(this.cursorColor);
+          });
+          this.stopWrite = false;
+        },
+        updateCursorVis(color="red", offsetX=0, offsetY=0) {
+          if (this.$refs?.[`i_${this.x+offsetX}_${this.y + offsetY}`]?.[0]) {
+            let elm = this.$refs[`i_${this.x + offsetX}_${this.y + offsetY}`][0];
+            if (color == "transparent") {
+              elm.style.removeProperty("background-color");
+            } else {
+              elm.style.backgroundColor = color;
+            }
+          }
+        },
+        setCursorPos(x, y) {
+          this.updateCursorVis("transparent", 0, 0);
+          this.x = x;
+          this.y = y;
+          this.lastLineX = this.x;
+          this.updateCursorVis(this.cursorColor, 0, 0);
+        },
+        drawBuffer() {
+          chillout.forEach(Array.from(app.charBuffer.entries()), ([xy, [char, color]])=>{
+            let [x, y] = xy.split("_");
+            this.setCharXY(x, y, char, color);
+          })
+        },
+        onInput(e) {
+          console.log(e);
+          this.updateCursorVis("transparent", 0, 0);
+          switch (e.key) {
+            case "Enter": {
+              this.y = Math.min(this.y + 1, this.rows);
+              this.x = this.lastLineX;
+              break;
+            }
+            case "Backspace": {
+              this.x = Math.max(this.x - 1, 1);
+              this.setCharXY(this.x, this.y, " ", true);
+              break;
+            }
+            case "ArrowUp": {
+              this.y = Math.max(this.y - 1, 1);
+              this.lastLineX = this.x;
+              break;
+            }
+            case "ArrowDown": {
+              this.y = Math.min(this.y + 1, this.rows);
+              this.lastLineX = this.x;
+              break;
+            }
+            case "ArrowLeft": {
+              this.x = Math.max(this.x - 1, 1);
+              break;
+            }
+            case "ArrowRight": {
+              this.x = Math.min(this.x + 1, this.cols + 1);
+              break;
+            }
+            default: {
+              if (e.key.length == 1) {
+                this.setCharXY(this.x, this.y, e.key, this.currentColor, true);
+                this.x = Math.min(this.x + 1, this.cols + 1);
+              }
+            }
+          }
+          this.updateCursorVis(this.cursorColor, 0, 0);
+        }
+      }
+    });
+    app.$mount("#app");
+
+    window.addEventListener("resize", ()=>{
+      setTimeout(()=>{
+        app.rows = Math.floor(innerHeight / 16) - 1;
+        app.cols = Math.floor(innerWidth / 8) - 1;
+
+        setTimeout(()=>{
+          app.drawBuffer()
+        }, 0)
+      }, 0)
+      
+    })
+    // By Kıraç Armağan Önal
+  </script>
+</body>
+</html>
